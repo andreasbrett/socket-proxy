@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net"
@@ -37,6 +38,11 @@ func handleHTTPRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// finally, log and proxy the request
+	stripEnv := cfg.StripEnv
+	if allowList.StripEnv != nil {
+		stripEnv = *allowList.StripEnv
+	}
+	r = r.WithContext(context.WithValue(r.Context(), stripEnvContextKey{}, stripEnv))
 	slog.Debug("allowed request", "method", r.Method, "URL", r.URL, "client", r.RemoteAddr) // #nosec G706 - structured logging (slog) safely encodes values
 	socketProxy.ServeHTTP(w, r)                                                             // #nosec G704 - Request target is always the specified socket
 }

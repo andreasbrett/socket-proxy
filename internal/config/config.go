@@ -27,11 +27,12 @@ const (
 	defaultShutdownGraceTime           = uint(10)               // Maximum time in seconds to wait for the server to shut down gracefully
 	defaultWatchdogInterval            = uint(0)                // watchdog interval in seconds (0 to disable)
 	defaultStopOnWatchdog              = false                  // set to true to stop the program when the socket gets unavailable (otherwise log only)
-	defaultProxySocketEndpoint         = ""                     // empty string means no socket listener, but regular TCP listener
-	defaultProxySocketEndpointFileMode = uint(0o600)            // set the file mode of the unix socket endpoint
-	defaultAllowBindMountFrom          = ""                     // empty string means no bind mount restrictions
-	defaultDockerLabelPrefix           = "socket-proxy"         // prefix before .allow. in per-container allowlist labels
-	defaultProxyContainerName          = ""                     // socket-proxy Docker container name (empty string disables container labels for allowlists)
+	defaultStripEnv                    = false
+	defaultProxySocketEndpoint         = ""             // empty string means no socket listener, but regular TCP listener
+	defaultProxySocketEndpointFileMode = uint(0o600)    // set the file mode of the unix socket endpoint
+	defaultAllowBindMountFrom          = ""             // empty string means no bind mount restrictions
+	defaultDockerLabelPrefix           = "socket-proxy" // prefix before .allow. in per-container allowlist labels
+	defaultProxyContainerName          = ""             // socket-proxy Docker container name (empty string disables container labels for allowlists)
 )
 
 type Config struct {
@@ -41,6 +42,7 @@ type Config struct {
 	AllowHealthcheck            bool
 	LogJSON                     bool
 	StopOnWatchdog              bool
+	StripEnv                    bool
 	ShutdownGraceTime           uint
 	WatchdogInterval            uint
 	LogLevel                    slog.Level
@@ -56,6 +58,7 @@ type AllowList struct {
 	ContainerName     string                      // Container name (empty for the default allowlist)
 	AllowedRequests   map[string][]*regexp.Regexp // map of request methods to request path regex patterns (no requests allowed if empty)
 	AllowedBindMounts []string                    // list of from portion of allowed bind mounts (all bind mounts allowed if empty)
+	StripEnv          *bool
 }
 
 // used for list of allowed requests
@@ -99,6 +102,7 @@ func InitConfig() (*Config, error) {
 		defaultShutdownGraceTimeValue           = defaultShutdownGraceTime
 		defaultSocketPathValue                  = defaultSocketPath
 		defaultStopOnWatchdogValue              = defaultStopOnWatchdog
+		defaultStripEnvValue                    = defaultStripEnv
 		defaultWatchdogIntervalValue            = defaultWatchdogInterval
 		defaultProxySocketEndpointValue         = defaultProxySocketEndpoint
 		defaultProxySocketEndpointFileModeValue = defaultProxySocketEndpointFileMode
@@ -142,6 +146,11 @@ func InitConfig() (*Config, error) {
 	if val, ok := os.LookupEnv("SP_STOPONWATCHDOG"); ok {
 		if parsedVal, err := strconv.ParseBool(val); err == nil {
 			defaultStopOnWatchdogValue = parsedVal
+		}
+	}
+	if val, ok := os.LookupEnv("SP_STRIPENV"); ok {
+		if parsedVal, err := strconv.ParseBool(val); err == nil {
+			defaultStripEnvValue = parsedVal
 		}
 	}
 	if val, ok := os.LookupEnv("SP_WATCHDOGINTERVAL"); ok && val != "" {
@@ -189,6 +198,7 @@ func InitConfig() (*Config, error) {
 	flag.UintVar(&cfg.ShutdownGraceTime, "shutdowngracetime", defaultShutdownGraceTimeValue, "maximum time in seconds to wait for the server to shut down gracefully")
 	flag.StringVar(&cfg.SocketPath, "socketpath", defaultSocketPathValue, "unix socket path to connect to")
 	flag.BoolVar(&cfg.StopOnWatchdog, "stoponwatchdog", defaultStopOnWatchdogValue, "stop the program when the socket gets unavailable (otherwise log only)")
+	flag.BoolVar(&cfg.StripEnv, "stripenv", defaultStripEnvValue, "enable environment variable stripping in JSON API responses")
 	flag.UintVar(&cfg.WatchdogInterval, "watchdoginterval", defaultWatchdogIntervalValue, "watchdog interval in seconds (0 to disable)")
 	flag.StringVar(&cfg.ProxySocketEndpoint, "proxysocketendpoint", defaultProxySocketEndpointValue, "unix socket endpoint (if set, used instead of the TCP listener)")
 	flag.UintVar(&endpointFileMode, "proxysocketendpointfilemode", defaultProxySocketEndpointFileModeValue, "set the file mode of the unix socket endpoint")
@@ -297,6 +307,9 @@ func InitConfig() (*Config, error) {
 // Print prints the allowlist, including the IP address of the associated container if it is not empty,
 // and in JSON format if logJSON is true
 func (allowList AllowList) Print(ip string, logJSON bool) {
+	if allowList.StripEnv != nil {
+		slog.Info("configured environment variable stripping override", "container", allowList.ContainerName, "ip", ip, "stripenv", *allowList.StripEnv)
+	}
 	// print allowed requests
 	if logJSON {
 		if ip == "" {

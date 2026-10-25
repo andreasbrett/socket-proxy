@@ -105,3 +105,33 @@ func TestInitConfig_WatchdogIntervalTooLarge(t *testing.T) {
 		t.Fatal("InitConfig() unexpectedly succeeded")
 	}
 }
+
+func TestInitConfig_StripEnv(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		env  string
+		args []string
+		want bool
+	}{
+		{name: "default"},
+		{name: "environment enabled", env: "true", want: true},
+		{name: "environment disabled", env: "false"},
+		{name: "invalid environment uses default", env: "invalid"},
+		{name: "bare flag", args: []string{"-stripenv"}, want: true},
+		{name: "flag disables environment", env: "true", args: []string{"-stripenv=false"}},
+		{name: "flag enables environment", env: "false", args: []string{"-stripenv=true"}, want: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("SP_STRIPENV", test.env)
+			restore := resetFlagsForTest(t, append([]string{"socket-proxy"}, test.args...))
+			defer restore()
+			cfg, err := InitConfig()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.StripEnv != test.want {
+				t.Fatalf("StripEnv = %v, want %v", cfg.StripEnv, test.want)
+			}
+		})
+	}
+}

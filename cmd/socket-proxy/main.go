@@ -66,9 +66,9 @@ func main() {
 	if cfg.ProxySocketEndpoint == "" {
 		// join the cfg.AllowFrom slice to a string to avoid the brackets in the logging (avoid confusion with IPv6 addresses)
 		allowFromString := strings.Join(cfg.AllowFrom, ",")
-		slog.Info("configuration info", "socketpath", cfg.SocketPath, "listenaddress", cfg.ListenAddress, "loglevel", cfg.LogLevel, "logjson", cfg.LogJSON, "allowfrom", allowFromString, "shutdowngracetime", cfg.ShutdownGraceTime)
+		slog.Info("configuration info", "socketpath", cfg.SocketPath, "listenaddress", cfg.ListenAddress, "loglevel", cfg.LogLevel, "logjson", cfg.LogJSON, "allowfrom", allowFromString, "shutdowngracetime", cfg.ShutdownGraceTime, "stripenv", cfg.StripEnv)
 	} else {
-		slog.Info("configuration info", "socketpath", cfg.SocketPath, "proxysocketendpoint", cfg.ProxySocketEndpoint, "proxysocketendpointfilemode", cfg.ProxySocketEndpointFileMode, "loglevel", cfg.LogLevel, "logjson", cfg.LogJSON, "shutdowngracetime", cfg.ShutdownGraceTime)
+		slog.Info("configuration info", "socketpath", cfg.SocketPath, "proxysocketendpoint", cfg.ProxySocketEndpoint, "proxysocketendpointfilemode", cfg.ProxySocketEndpointFileMode, "loglevel", cfg.LogLevel, "logjson", cfg.LogJSON, "shutdowngracetime", cfg.ShutdownGraceTime, "stripenv", cfg.StripEnv)
 		slog.Info("proxysocketendpoint is set, so the TCP listener is deactivated")
 	}
 	if cfg.WatchdogInterval > 0 {
@@ -99,6 +99,7 @@ func main() {
 	// define the reverse proxy
 	socketURLDummy, _ := url.Parse("http://localhost") // dummy URL - we use the unix socket
 	socketProxy = httputil.NewSingleHostReverseProxy(socketURLDummy)
+	socketProxy.ModifyResponse = stripEnvIfEnabled
 	socketProxy.Transport = &http.Transport{
 		DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
 			return net.Dial("unix", cfg.SocketPath)

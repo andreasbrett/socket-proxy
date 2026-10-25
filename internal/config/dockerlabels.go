@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -270,8 +271,12 @@ func buildByIP(containers []container.Summary, networks []string) (map[string]Al
 		if err != nil {
 			return nil, err
 		}
+		stripEnv, err := extractStripEnv(cntr)
+		if err != nil {
+			return nil, err
+		}
 
-		if len(allowedRequests) > 0 || len(allowedBindMounts) > 0 {
+		if len(allowedRequests) > 0 || len(allowedBindMounts) > 0 || stripEnv != nil {
 			for networkID, cntrNetwork := range cntr.NetworkSettings.Networks {
 				if slices.Contains(networks, networkID) {
 					allowList := AllowList{
@@ -279,6 +284,7 @@ func buildByIP(containers []container.Summary, networks []string) (map[string]Al
 						ContainerName:     containerName(cntr),
 						AllowedRequests:   allowedRequests,
 						AllowedBindMounts: allowedBindMounts,
+						StripEnv:          stripEnv,
 					}
 
 					if len(cntrNetwork.IPAddress) > 0 {
@@ -346,14 +352,19 @@ func (allowLists *AllowListRegistry) add(
 	if err != nil {
 		return nil, err
 	}
+	stripEnv, err := extractStripEnv(cntr)
+	if err != nil {
+		return nil, err
+	}
 
 	var ips []string
-	if len(allowedRequests) > 0 || len(allowedBindMounts) > 0 {
+	if len(allowedRequests) > 0 || len(allowedBindMounts) > 0 || stripEnv != nil {
 		allowList := AllowList{
 			ID:                cntr.ID,
 			ContainerName:     containerName(cntr),
 			AllowedRequests:   allowedRequests,
 			AllowedBindMounts: allowedBindMounts,
+			StripEnv:          stripEnv,
 		}
 
 		allowLists.mutex.Lock()
@@ -473,6 +484,19 @@ func getSocketProxyContainerSummary(socketPath, proxyContainerName string) (cont
 		}
 	}
 	return container.Summary{}, fmt.Errorf("socket-proxy container \"%s\" was not found after %d attempts; verify the container name is correct and the container is running", proxyContainerName, maxTries)
+}
+
+func extractStripEnv(cntr container.Summary) (*bool, error) {
+	label := strings.TrimSuffix(allowedDockerLabelPrefix, "allow.") + "stripenv"
+	value, exists := cntr.Labels[label]
+	if !exists {
+		return nil, nil
+	}
+	enabled, err := strconv.ParseBool(value)
+	if err != nil {
+		return nil, fmt.Errorf("invalid boolean for Docker container label %q", label)
+	}
+	return &enabled, nil
 }
 
 // extract Docker container allowlist label data from the container summary

@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"regexp"
 	"sort"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -18,6 +19,7 @@ import (
 	"github.com/wollomatic/socket-proxy/internal/docker/api/types/container"
 	"github.com/wollomatic/socket-proxy/internal/docker/api/types/events"
 	"github.com/wollomatic/socket-proxy/internal/docker/api/types/network"
+	"github.com/wollomatic/socket-proxy/internal/docker/client"
 )
 
 func Test_extractLabelData(t *testing.T) {
@@ -106,6 +108,64 @@ func Test_extractLabelData(t *testing.T) {
 			}
 			if !reflect.DeepEqual(got2, tt.want2) {
 				t.Errorf("extractLabelData() = %v, want %v", got2, tt.want2)
+			}
+		})
+	}
+}
+
+func TestStripEnvLabels(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		prefix  string
+		labels  map[string]string
+		want    *bool
+		wantErr bool
+	}{
+		{name: "absent"},
+		{name: "enabled", labels: map[string]string{"socket-proxy.stripenv": "true"}, want: new(true)},
+		{name: "disabled", labels: map[string]string{"socket-proxy.stripenv": "false"}, want: new(false)},
+		{name: "invalid", labels: map[string]string{"socket-proxy.stripenv": "invalid"}, wantErr: true},
+		{name: "empty", labels: map[string]string{"socket-proxy.stripenv": ""}, wantErr: true},
+		{name: "custom prefix", prefix: "custom.proxy", labels: map[string]string{"custom.proxy.stripenv": "true", "socket-proxy.stripenv": "false"}, want: new(true)},
+		{name: "other prefix ignored", prefix: "custom.proxy", labels: map[string]string{"socket-proxy.stripenv": "true"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			previousPrefix := allowedDockerLabelPrefix
+			defer func() { allowedDockerLabelPrefix = previousPrefix }()
+			prefix := defaultDockerLabelPrefix
+			if test.prefix != "" {
+				prefix = test.prefix
+			}
+			allowedDockerLabelPrefix = prefix + ".allow."
+			cntr := container.Summary{
+				ID:     "client",
+				Labels: test.labels,
+				NetworkSettings: &container.NetworkSettingsSummary{Networks: map[string]*network.EndpointSettings{
+					"proxy-network": {IPAddress: "172.20.0.2", GlobalIPv6Address: "fd00::2"},
+				}},
+			}
+			got, err := extractStripEnv(cntr)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("extractStripEnv() error = %v, want error %v", err, test.wantErr)
+			}
+			if !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("StripEnv = %v, want %v", got, test.want)
+			}
+			byIP, err := buildByIP([]container.Summary{cntr}, []string{"proxy-network"})
+			if (err != nil) != test.wantErr {
+				t.Fatalf("buildByIP() error = %v, want error %v", err, test.wantErr)
+			}
+			if test.wantErr {
+				return
+			}
+			for _, ip := range []string{"172.20.0.2", "fd00::2"} {
+				allowList, found := byIP[ip]
+				if found != (test.want != nil) || !reflect.DeepEqual(allowList.StripEnv, test.want) {
+					t.Fatalf("incorrect strip setting registered for %s", ip)
+				}
+				if len(allowList.AllowedRequests) != 0 {
+					t.Fatal("strip label granted request access")
+				}
 			}
 		})
 	}
@@ -206,6 +266,8 @@ func TestRefreshAllowLists(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = listener.Close() })
 
+	var stripEnvEnabled atomic.Bool
+	stripEnvEnabled.Store(true)
 	go func() {
 		_ = http.Serve(listener, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			switch r.URL.Path {
@@ -216,6 +278,7 @@ func TestRefreshAllowLists(t *testing.T) {
 					ID: "container-id",
 					Labels: map[string]string{
 						"socket-proxy.allow.get": "/version",
+						"socket-proxy.stripenv":  strconv.FormatBool(stripEnvEnabled.Load()),
 					},
 					NetworkSettings: &container.NetworkSettingsSummary{Networks: map[string]*network.EndpointSettings{
 						"proxy-network": {IPAddress: "172.20.0.2"},
@@ -246,6 +309,26 @@ func TestRefreshAllowLists(t *testing.T) {
 	}
 	if !matchAny(allowList.AllowedRequests[http.MethodGet], "/version") {
 		t.Fatal("refreshed allowlist does not contain the container label")
+	}
+	if allowList.StripEnv == nil || !*allowList.StripEnv {
+		t.Fatal("refreshed allowlist does not enable environment variable stripping")
+	}
+	stripEnvEnabled.Store(false)
+	dockerClient, err := client.NewClientWithOpts(client.WithHost("unix://"+socketPath), client.WithAPIVersionNegotiation())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dockerClient.Close()
+	_, _, err = cfg.AllowLists.updateFromEvent(context.Background(), dockerClient, events.Message{
+		Action: events.ActionStart,
+		Actor:  events.Actor{ID: "container-id"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowList, found = cfg.AllowLists.FindByIP("172.20.0.2")
+	if !found || allowList.StripEnv == nil || *allowList.StripEnv {
+		t.Fatal("start event did not update the environment variable stripping override")
 	}
 }
 
