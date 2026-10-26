@@ -501,7 +501,7 @@ func extractLabelData(cntr container.Summary) (map[string][]*regexp.Regexp, []st
 				if err != nil {
 					return nil, nil, nil, nil, err
 				}
-			} else if allowSpec == "CONTAINERNAME" {
+			} else if allowSpec == "CONTAINERNAMES" {
 				var err error
 				allowedContainerNames, err = parseAllowedContainerNames(labelValue)
 				if err != nil {

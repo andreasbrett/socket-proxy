@@ -93,7 +93,7 @@ func InitConfig() (*Config, error) {
 		logLevel                                string
 		endpointFileMode                        uint
 		allowBindMountFromString                string
-		allowContainerNameString                string
+		allowContainerNamesString               string
 		allowContainerLabelsString              string
 		dockerLabelPrefix                       string
 		defaultAllowFromValue                   = defaultAllowFrom
@@ -172,11 +172,6 @@ func InitConfig() (*Config, error) {
 	if val, ok := os.LookupEnv("SP_PROXYCONTAINERNAME"); ok && val != "" {
 		defaultProxyContainerNameValue = val
 	}
-	defaultContainerLabels := os.Getenv("CONTAINER_LABELS")
-	if value, ok := os.LookupEnv("SP_ALLOWCONTAINERLABELS"); ok {
-		defaultContainerLabels = value
-	}
-
 	methodAllowLists := newMethodRegexes()
 
 	// multiple values per method
@@ -203,8 +198,8 @@ func InitConfig() (*Config, error) {
 	flag.StringVar(&cfg.ProxySocketEndpoint, "proxysocketendpoint", defaultProxySocketEndpointValue, "unix socket endpoint (if set, used instead of the TCP listener)")
 	flag.UintVar(&endpointFileMode, "proxysocketendpointfilemode", defaultProxySocketEndpointFileModeValue, "set the file mode of the unix socket endpoint")
 	flag.StringVar(&allowBindMountFromString, "allowbindmountfrom", defaultAllowBindMountFromValue, "allowed directories for bind mounts (comma-separated)")
-	flag.StringVar(&allowContainerNameString, "allowcontainername", os.Getenv("SP_ALLOWCONTAINERNAME"), "allowed container name prefixes (comma-separated; empty allows all names)")
-	flag.StringVar(&allowContainerLabelsString, "allowcontainerlabels", defaultContainerLabels, "required container labels (comma-separated key or key=value; all must match)")
+	flag.StringVar(&allowContainerNamesString, "allowcontainernames", os.Getenv("SP_ALLOWCONTAINERNAMES"), "allowed container name prefixes (comma-separated; empty allows all names)")
+	flag.StringVar(&allowContainerLabelsString, "allowcontainerlabels", os.Getenv("SP_ALLOWCONTAINERLABELS"), "required container labels (comma-separated key or key=value; all must match)")
 	flag.StringVar(&dockerLabelPrefix, "dockerlabelprefix", defaultDockerLabelPrefixValue, "prefix before .allow. in Docker container allowlist labels")
 	flag.StringVar(&cfg.ProxyContainerName, "proxycontainername", defaultProxyContainerNameValue, "socket-proxy Docker container name")
 	for i := range methodAllowLists {
@@ -219,7 +214,7 @@ func InitConfig() (*Config, error) {
 	// init allowlist registry to configure default allowlist
 	cfg.AllowLists = &AllowListRegistry{}
 	var err error
-	cfg.AllowLists.Default.AllowedContainerNames, err = parseAllowedContainerNames(allowContainerNameString)
+	cfg.AllowLists.Default.AllowedContainerNames, err = parseAllowedContainerNames(allowContainerNamesString)
 	if err != nil {
 		return nil, err
 	}
@@ -322,7 +317,7 @@ func (allowList AllowList) Print(ip string, logJSON bool) {
 		slog.Info("Docker container label restrictions enabled", "allowcontainerlabels", allowList.AllowedContainerLabels, "container", allowList.ContainerName, "ip", ip)
 	}
 	if len(allowList.AllowedContainerNames) > 0 {
-		slog.Info("Docker container name restrictions enabled", "allowcontainername", allowList.AllowedContainerNames, "container", allowList.ContainerName, "ip", ip)
+		slog.Info("Docker container name restrictions enabled", "allowcontainernames", allowList.AllowedContainerNames, "container", allowList.ContainerName, "ip", ip)
 	}
 	// print allowed requests
 	if logJSON {

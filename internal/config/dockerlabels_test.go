@@ -45,14 +45,19 @@ func Test_extractLabelData(t *testing.T) {
 		},
 		{
 			name:      "container name prefixes",
-			cntr:      container.Summary{Labels: map[string]string{"socket-proxy.allow.containername": "db, redis"}},
+			cntr:      container.Summary{Labels: map[string]string{"socket-proxy.allow.containernames": "db, redis"}},
 			want:      map[string][]*regexp.Regexp{},
 			wantNames: []string{"db", "redis"},
 		},
 		{
 			name:    "invalid container name prefix",
-			cntr:    container.Summary{Labels: map[string]string{"socket-proxy.allow.containername": "db,,redis"}},
+			cntr:    container.Summary{Labels: map[string]string{"socket-proxy.allow.containernames": "db,,redis"}},
 			wantErr: true,
+		},
+		{
+			name: "singular container name label ignored",
+			cntr: container.Summary{Labels: map[string]string{"socket-proxy.allow.containername": "db,redis"}},
+			want: map[string][]*regexp.Regexp{},
 		},
 		{
 			name: "valid labels with multiple methods and regexes",
@@ -182,9 +187,9 @@ func TestBuildByIPContainerNamePrefixes(t *testing.T) {
 		Names: []string{"/client"},
 		Labels: map[string]string{
 			"custom-proxy.allow.get":             ".*",
-			"custom-proxy.allow.containername":   "db,redis",
+			"custom-proxy.allow.containernames":  "db,redis",
 			"custom-proxy.allow.containerlabels": "myfoo,com.bar=fun",
-			"socket-proxy.allow.containername":   "ignored",
+			"socket-proxy.allow.containernames":  "ignored",
 			"socket-proxy.allow.containerlabels": "ignored",
 		},
 		NetworkSettings: &container.NetworkSettingsSummary{Networks: map[string]*network.EndpointSettings{

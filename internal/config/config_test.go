@@ -59,13 +59,14 @@ func TestInitConfig_AllowedContainerNames(t *testing.T) {
 	}{
 		{name: "default"},
 		{name: "environment", value: "db, redis", want: []string{"db", "redis"}},
-		{name: "flag overrides environment", value: "db", args: []string{"-allowcontainername=redis"}, want: []string{"redis"}},
-		{name: "empty flag disables filter", value: "db", args: []string{"-allowcontainername="}},
+		{name: "flag overrides environment", value: "db", args: []string{"-allowcontainernames=redis"}, want: []string{"redis"}},
+		{name: "empty flag disables filter", value: "db", args: []string{"-allowcontainernames="}},
 		{name: "empty prefix", value: "db,", wantErr: true},
 		{name: "invalid prefix", value: "db,*", wantErr: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			t.Setenv("SP_ALLOWCONTAINERNAME", test.value)
+			t.Setenv("SP_ALLOWCONTAINERNAME", "ignored")
+			t.Setenv("SP_ALLOWCONTAINERNAMES", test.value)
 			restore := resetFlagsForTest(t, append([]string{"socket-proxy"}, test.args...))
 			defer restore()
 			cfg, err := InitConfig()
@@ -96,17 +97,16 @@ func TestInitConfig_DockerLabelPrefixFlagOverridesEnv(t *testing.T) {
 
 func TestInitConfig_AllowedContainerLabels(t *testing.T) {
 	for _, test := range []struct {
-		name     string
-		value    string
-		prefixed *string
-		args     []string
-		want     []string
-		wantErr  bool
+		name    string
+		value   string
+		legacy  string
+		args    []string
+		want    []string
+		wantErr bool
 	}{
 		{name: "default"},
 		{name: "environment", value: "myfoo, com.bar=fun", want: []string{"myfoo", "com.bar=fun"}},
-		{name: "prefixed environment wins", value: "ignored", prefixed: new("myfoo"), want: []string{"myfoo"}},
-		{name: "empty prefixed environment disables", value: "ignored", prefixed: new("")},
+		{name: "legacy environment ignored", legacy: "myfoo,com.bar=fun"},
 		{name: "flag overrides environment", value: "ignored", args: []string{"-allowcontainerlabels=com.bar=fun"}, want: []string{"com.bar=fun"}},
 		{name: "empty flag disables", value: "ignored", args: []string{"-allowcontainerlabels="}},
 		{name: "empty value", value: "myfoo=", want: []string{"myfoo="}},
@@ -116,14 +116,8 @@ func TestInitConfig_AllowedContainerLabels(t *testing.T) {
 		{name: "space in key", value: "my foo", wantErr: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			t.Setenv("CONTAINER_LABELS", test.value)
-			t.Setenv("SP_ALLOWCONTAINERLABELS", "")
-			if err := os.Unsetenv("SP_ALLOWCONTAINERLABELS"); err != nil {
-				t.Fatal(err)
-			}
-			if test.prefixed != nil {
-				t.Setenv("SP_ALLOWCONTAINERLABELS", *test.prefixed)
-			}
+			t.Setenv("CONTAINER_LABELS", test.legacy)
+			t.Setenv("SP_ALLOWCONTAINERLABELS", test.value)
 			restore := resetFlagsForTest(t, append([]string{"socket-proxy"}, test.args...))
 			defer restore()
 			cfg, err := InitConfig()
