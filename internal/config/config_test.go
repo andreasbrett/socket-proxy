@@ -4,6 +4,7 @@ import (
 	"flag"
 	"math"
 	"os"
+	"reflect"
 	"strconv"
 	"testing"
 )
@@ -45,6 +46,36 @@ func TestInitConfig_AllowMethodFlagOverridesEnv(t *testing.T) {
 	}
 	if regexes[0].MatchString("/from-env") {
 		t.Fatalf("expected env GET regex to be ignored when flag is present, got %q", regexes[0].String())
+	}
+}
+
+func TestInitConfig_AllowedContainerNames(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		value   string
+		args    []string
+		want    []string
+		wantErr bool
+	}{
+		{name: "default"},
+		{name: "environment", value: "db, redis", want: []string{"db", "redis"}},
+		{name: "flag overrides environment", value: "db", args: []string{"-allowcontainername=redis"}, want: []string{"redis"}},
+		{name: "empty flag disables filter", value: "db", args: []string{"-allowcontainername="}},
+		{name: "empty prefix", value: "db,", wantErr: true},
+		{name: "invalid prefix", value: "db,*", wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("SP_ALLOWCONTAINERNAME", test.value)
+			restore := resetFlagsForTest(t, append([]string{"socket-proxy"}, test.args...))
+			defer restore()
+			cfg, err := InitConfig()
+			if (err != nil) != test.wantErr {
+				t.Fatalf("InitConfig() error = %v", err)
+			}
+			if err == nil && !reflect.DeepEqual(cfg.AllowLists.Default.AllowedContainerNames, test.want) {
+				t.Errorf("prefixes = %v, want %v", cfg.AllowLists.Default.AllowedContainerNames, test.want)
+			}
+		})
 	}
 }
 

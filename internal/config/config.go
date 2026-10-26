@@ -52,10 +52,11 @@ type Config struct {
 }
 
 type AllowList struct {
-	ID                string                      // Container ID (empty for the default allowlist)
-	ContainerName     string                      // Container name (empty for the default allowlist)
-	AllowedRequests   map[string][]*regexp.Regexp // map of request methods to request path regex patterns (no requests allowed if empty)
-	AllowedBindMounts []string                    // list of from portion of allowed bind mounts (all bind mounts allowed if empty)
+	ID                    string                      // Container ID (empty for the default allowlist)
+	ContainerName         string                      // Container name (empty for the default allowlist)
+	AllowedRequests       map[string][]*regexp.Regexp // map of request methods to request path regex patterns (no requests allowed if empty)
+	AllowedBindMounts     []string                    // list of from portion of allowed bind mounts (all bind mounts allowed if empty)
+	AllowedContainerNames []string
 }
 
 // used for list of allowed requests
@@ -77,6 +78,7 @@ var supportedHTTPMethods = []string{
 }
 
 var dockerLabelPrefixRegexp = regexp.MustCompile(`^[a-z0-9]+(?:[.-][a-z0-9]+)*$`)
+var containerNamePrefixRegexp = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
 
 // InitConfig reads configuration from environment variables and command-line
 // flags, validates the resulting values, and returns the initialized Config.
@@ -89,6 +91,7 @@ func InitConfig() (*Config, error) {
 		logLevel                                string
 		endpointFileMode                        uint
 		allowBindMountFromString                string
+		allowContainerNameString                string
 		dockerLabelPrefix                       string
 		defaultAllowFromValue                   = defaultAllowFrom
 		defaultAllowHealthcheckValue            = defaultAllowHealthcheck
@@ -193,6 +196,7 @@ func InitConfig() (*Config, error) {
 	flag.StringVar(&cfg.ProxySocketEndpoint, "proxysocketendpoint", defaultProxySocketEndpointValue, "unix socket endpoint (if set, used instead of the TCP listener)")
 	flag.UintVar(&endpointFileMode, "proxysocketendpointfilemode", defaultProxySocketEndpointFileModeValue, "set the file mode of the unix socket endpoint")
 	flag.StringVar(&allowBindMountFromString, "allowbindmountfrom", defaultAllowBindMountFromValue, "allowed directories for bind mounts (comma-separated)")
+	flag.StringVar(&allowContainerNameString, "allowcontainername", os.Getenv("SP_ALLOWCONTAINERNAME"), "allowed container name prefixes (comma-separated; empty allows all names)")
 	flag.StringVar(&dockerLabelPrefix, "dockerlabelprefix", defaultDockerLabelPrefixValue, "prefix before .allow. in Docker container allowlist labels")
 	flag.StringVar(&cfg.ProxyContainerName, "proxycontainername", defaultProxyContainerNameValue, "socket-proxy Docker container name")
 	for i := range methodAllowLists {
@@ -206,6 +210,11 @@ func InitConfig() (*Config, error) {
 
 	// init allowlist registry to configure default allowlist
 	cfg.AllowLists = &AllowListRegistry{}
+	var err error
+	cfg.AllowLists.Default.AllowedContainerNames, err = parseAllowedContainerNames(allowContainerNameString)
+	if err != nil {
+		return nil, err
+	}
 
 	// parse comma-separeted allowFromString into allowFrom slice
 	cfg.AllowFrom = strings.Split(allowFromString, ",")
@@ -297,6 +306,9 @@ func InitConfig() (*Config, error) {
 // Print prints the allowlist, including the IP address of the associated container if it is not empty,
 // and in JSON format if logJSON is true
 func (allowList AllowList) Print(ip string, logJSON bool) {
+	if len(allowList.AllowedContainerNames) > 0 {
+		slog.Info("Docker container name restrictions enabled", "allowcontainername", allowList.AllowedContainerNames, "container", allowList.ContainerName, "ip", ip)
+	}
 	// print allowed requests
 	if logJSON {
 		if ip == "" {
@@ -386,4 +398,19 @@ func parseAllowedBindMounts(allowBindMountFromString string) ([]string, error) {
 		allowedBindMounts[i] = filepath.Clean(dir)
 	}
 	return allowedBindMounts, nil
+}
+
+func parseAllowedContainerNames(value string) ([]string, error) {
+	if value == "" {
+		return nil, nil
+	}
+	prefixes := strings.Split(value, ",")
+	for index, prefix := range prefixes {
+		prefix = strings.TrimSpace(prefix)
+		if !containerNamePrefixRegexp.MatchString(prefix) {
+			return nil, fmt.Errorf("invalid container name prefix %q", prefix)
+		}
+		prefixes[index] = prefix
+	}
+	return prefixes, nil
 }

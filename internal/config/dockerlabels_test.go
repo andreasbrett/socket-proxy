@@ -24,12 +24,24 @@ func Test_extractLabelData(t *testing.T) {
 	tests := []struct {
 		name string // description of this test case
 		// Named input parameters for target function.
-		cntr    container.Summary
-		prefix  string
-		want    map[string][]*regexp.Regexp
-		want2   []string
-		wantErr bool
+		cntr      container.Summary
+		prefix    string
+		want      map[string][]*regexp.Regexp
+		want2     []string
+		wantNames []string
+		wantErr   bool
 	}{
+		{
+			name:      "container name prefixes",
+			cntr:      container.Summary{Labels: map[string]string{"socket-proxy.allow.containername": "db, redis"}},
+			want:      map[string][]*regexp.Regexp{},
+			wantNames: []string{"db", "redis"},
+		},
+		{
+			name:    "invalid container name prefix",
+			cntr:    container.Summary{Labels: map[string]string{"socket-proxy.allow.containername": "db,,redis"}},
+			wantErr: true,
+		},
 		{
 			name: "valid labels with multiple methods and regexes",
 			cntr: container.Summary{
@@ -91,7 +103,7 @@ func Test_extractLabelData(t *testing.T) {
 			if tt.prefix != "" {
 				allowedDockerLabelPrefix = tt.prefix + ".allow."
 			}
-			got, got2, gotErr := extractLabelData(tt.cntr)
+			got, got2, gotNames, gotErr := extractLabelData(tt.cntr)
 			if gotErr != nil {
 				if !tt.wantErr {
 					t.Errorf("extractLabelData() failed: %v", gotErr)
@@ -106,6 +118,9 @@ func Test_extractLabelData(t *testing.T) {
 			}
 			if !reflect.DeepEqual(got2, tt.want2) {
 				t.Errorf("extractLabelData() = %v, want %v", got2, tt.want2)
+			}
+			if !reflect.DeepEqual(gotNames, tt.wantNames) {
+				t.Errorf("container name prefixes = %v, want %v", gotNames, tt.wantNames)
 			}
 		})
 	}
@@ -140,6 +155,32 @@ func TestContainerName(t *testing.T) {
 				t.Errorf("containerName() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestBuildByIPContainerNamePrefixes(t *testing.T) {
+	previousPrefix := allowedDockerLabelPrefix
+	allowedDockerLabelPrefix = "custom-proxy.allow."
+	t.Cleanup(func() { allowedDockerLabelPrefix = previousPrefix })
+	byIP, err := buildByIP([]container.Summary{{
+		ID:    "client-id",
+		Names: []string{"/client"},
+		Labels: map[string]string{
+			"custom-proxy.allow.get":           ".*",
+			"custom-proxy.allow.containername": "db,redis",
+			"socket-proxy.allow.containername": "ignored",
+		},
+		NetworkSettings: &container.NetworkSettingsSummary{Networks: map[string]*network.EndpointSettings{
+			"proxy-network": {IPAddress: "172.20.0.2", GlobalIPv6Address: "fd00::2"},
+		}},
+	}}, []string{"proxy-network"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ip := range []string{"172.20.0.2", "fd00::2"} {
+		if !reflect.DeepEqual(byIP[ip].AllowedContainerNames, []string{"db", "redis"}) {
+			t.Errorf("allowlist for %s = %+v", ip, byIP[ip])
+		}
 	}
 }
 

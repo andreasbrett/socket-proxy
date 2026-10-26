@@ -206,9 +206,34 @@ Bind mount restrictions are applied to versioned and unversioned container, Swar
 > [!WARNING]
 > This option is a request filter, not a sandbox for otherwise untrusted Docker API clients. It cannot resolve host-side symbolic links, inspect a named volume that was created outside the filtered `/volumes/create` endpoint, or determine what a custom volume plugin exposes. It also does not restrict other host-access mechanisms such as privileged containers, host namespaces, added capabilities, or device mappings. Do not grant container- or service-creation endpoints to clients that must not control the Docker host; use the HTTP method/path allowlists, network isolation, and Docker authorization controls as additional boundaries.
 
+#### Filtering by container name
+
+Use `-allowcontainername=db,redis` or `SP_ALLOWCONTAINERNAME="db,redis"` to restrict container access to a comma-separated list of name prefixes. Matching is case-sensitive and ignores Docker's leading `/`: this example allows `db_1`, `db_2`, `redis`, and `redis-cache`, but not `web`. These are literal prefixes, not regular expressions or wildcard patterns. Surrounding whitespace is trimmed; empty entries and invalid name characters are rejected. By default, no name restriction is applied.
+
+For a particular container using the proxy, set the label on that **requesting container**:
+
+```yaml
+labels:
+  - 'socket-proxy.allow.get=.*'
+  - 'socket-proxy.allow.containername=db,redis'
+```
+
+Enable per-container allowlists with `-proxycontainername` as described below. A custom `-dockerlabelprefix` also applies to this label. As with the existing per-container allowlists, the requesting container's allowlist replaces the global default; it does not inherit the global name restriction. HTTP method/path allowlists are still required.
+
+When enabled:
+
++ Container lists (`GET /containers/json`) contain only matching containers, including when `all=true` is used.
++ Direct container requests are checked by inspecting the actual name in Docker, even when the request uses a full or abbreviated container ID. Inspection failures deny access. Requests are forwarded using the resolved ID rather than the original name.
++ Container creation requires an explicit matching `name`; renaming requires both the current and new name to match. Bulk container pruning is rejected.
++ Existing exec sessions, commits, and network connect/disconnect requests are checked against the target container's name.
++ Event streams contain only events of type `container` with matching names; other event types are omitted. Versioned and unversioned endpoints are supported.
+
+> [!WARNING]
+> This filter is not a Docker authorization sandbox. Other endpoints (for example, network inspection, `/system/df`, builds, and Swarm services) are not filtered and may expose information about or affect other containers. Names are mutable, and inspection cannot be atomic with the subsequent operation. Restrict HTTP methods and paths to the endpoints clients actually need; do not grant broad Docker API access to untrusted clients.
+
 #### Setting up per-container allowlists
 
-Allowlists for both requests and bind mount restrictions can be specified for particular containers. To do this:
+Allowlists for requests, bind mount restrictions, and container name prefixes can be specified for particular containers. To do this:
 
 1. Set the `-proxycontainername` parameter or the `SP_PROXYCONTAINERNAME` environment variable to the name of the socket-proxy container.
 2. Make sure that each container that will use the socket-proxy is in a Docker network that the socket-proxy container is also in.
@@ -320,6 +345,7 @@ socket-proxy can be configured via command-line parameters or environment variab
 |--------------------------------|----------------------------------|------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `-allowfrom`                   | `SP_ALLOWFROM`                   | `127.0.0.1/32`         | Specifies the IP addresses or hostnames (comma-separated) of the clients or the hostname of one specific client allowed to connect to the proxy. The default value is `127.0.0.1/32`, which means only localhost is allowed. This default configuration may not be useful in most cases, but it is because of a secure-by-default design. To allow all IPv4 addresses, set `-allowfrom=0.0.0.0/0`. Alternatively, hostnames can be set, for example `-allowfrom=traefik`, or `-allowfrom=traefik,dozzle`. Please remember that socket-proxy should never be exposed to a public network, regardless of this extra security layer. |
 | `-allowbindmountfrom`          | `SP_ALLOWBINDMOUNTFROM`          | (not set)              | Restricts direct host bind sources found in supported Docker API requests to the specified directories and their subdirectories. It covers legacy and modern binds plus local volume-driver `bind`/`rbind` options, and rejects `VolumesFrom`. It is a request filter with the limitations documented above, not a sandbox for untrusted Docker API clients. Each comma-separated directory must start with `/`.                                                                                                                                                                                                                         |
+| `-allowcontainername`          | `SP_ALLOWCONTAINERNAME`          | (not set)              | Comma-separated, case-sensitive container name prefixes. Filters container lists and events and checks direct container access, including access by ID. Per-container label: `socket-proxy.allow.containername`. See the restrictions and limitations above. |
 | `-allowhealthcheck`            | `SP_ALLOWHEALTHCHECK`            | (not set/false)        | If set, it allows the included health check binary to check the socket connection via TCP port 55555 (socket-proxy then listens on `127.0.0.1:55555/health`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `-listenip`                    | `SP_LISTENIP`                    | `127.0.0.1`            | Specifies the IP address the server will bind on. Default is only the internal network.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `-logjson`                     | `SP_LOGJSON`                     | (not set/false)        | If set, it enables logging in JSON format. If unset, socket-proxy logs in plain text format.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |

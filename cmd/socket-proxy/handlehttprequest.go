@@ -35,10 +35,22 @@ func handleHTTPRequest(w http.ResponseWriter, r *http.Request) {
 		communicateBlockedRequest(w, r, "bind mount restriction: "+err.Error(), http.StatusForbidden)
 		return
 	}
+	if err := checkContainerNameRestrictions(allowList.AllowedContainerNames, r); err != nil {
+		communicateBlockedRequest(w, r, "container name restriction: "+err.Error(), http.StatusForbidden)
+		return
+	}
 
 	// finally, log and proxy the request
 	slog.Debug("allowed request", "method", r.Method, "URL", r.URL, "client", r.RemoteAddr) // #nosec G706 - structured logging (slog) safely encodes values
-	socketProxy.ServeHTTP(w, r)                                                             // #nosec G704 - Request target is always the specified socket
+	if len(allowList.AllowedContainerNames) > 0 {
+		proxy := *socketProxy
+		proxy.ModifyResponse = func(response *http.Response) error {
+			return filterContainerNameResponse(allowList.AllowedContainerNames, response)
+		}
+		proxy.ServeHTTP(w, r)
+		return
+	}
+	socketProxy.ServeHTTP(w, r) // #nosec G704 - Request target is always the specified socket
 }
 
 func matchURL(allowedURIs []*regexp.Regexp, requestURI string) bool {
