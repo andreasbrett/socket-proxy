@@ -267,6 +267,61 @@ func TestFilterContainerNameResponse(t *testing.T) {
 	}
 }
 
+func TestHandleHTTPRequestRejectsRestrictedWrites(t *testing.T) {
+	previousConfig, previousProxy := cfg, socketProxy
+	t.Cleanup(func() { cfg, socketProxy = previousConfig, previousProxy })
+	for _, test := range []struct {
+		name        string
+		path        string
+		body        string
+		inspections []string
+	}{
+		{name: "direct container", path: "/containers/web/stop", inspections: []string{"/containers/web/json"}},
+		{name: "exec", path: "/v1.54/exec/session/start", inspections: []string{"/v1.54/exec/session/json", "/v1.54/containers/blocked/json"}},
+		{name: "commit", path: "/commit?container=web", inspections: []string{"/containers/web/json"}},
+		{name: "network connect", path: "/networks/net/connect", body: `{"Container":"web"}`, inspections: []string{"/containers/web/json"}},
+		{name: "network disconnect", path: "/networks/net/disconnect", body: `{"Container":"web"}`, inspections: []string{"/containers/web/json"}},
+		{name: "create", path: "/containers/create?name=web"},
+		{name: "rename", path: "/containers/db_1/rename?name=web"},
+		{name: "prune", path: "/containers/prune"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg = &config.Config{
+				AllowFrom: []string{"127.0.0.1/32"},
+				AllowLists: &config.AllowListRegistry{Default: config.AllowList{
+					AllowedRequests:       map[string][]*regexp.Regexp{"POST": {regexp.MustCompile(`.*`)}},
+					AllowedContainerNames: []string{"db"},
+				}},
+			}
+			var inspections []string
+			socketProxy = &httputil.ReverseProxy{
+				Director: func(request *http.Request) {},
+				Transport: inspectionTransport(func(request *http.Request) (*http.Response, error) {
+					if request.Method != http.MethodGet || !strings.HasSuffix(request.URL.Path, "/json") {
+						t.Fatalf("restricted write forwarded: %s %s", request.Method, request.URL)
+					}
+					inspections = append(inspections, request.URL.Path)
+					body := `{"Id":"blocked","Name":"/web"}`
+					if strings.Contains(request.URL.Path, "/exec/") {
+						body = `{"ContainerID":"blocked"}`
+					}
+					return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Request: request, Body: io.NopCloser(strings.NewReader(body))}, nil
+				}),
+			}
+			request := httptest.NewRequest(http.MethodPost, test.path, strings.NewReader(test.body))
+			request.RemoteAddr = "127.0.0.1:12345"
+			response := httptest.NewRecorder()
+			handleHTTPRequest(response, request)
+			if response.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d", response.Code, http.StatusForbidden)
+			}
+			if strings.Join(inspections, ",") != strings.Join(test.inspections, ",") {
+				t.Errorf("inspections = %v, want %v", inspections, test.inspections)
+			}
+		})
+	}
+}
+
 func TestHandleHTTPRequestContainerNames(t *testing.T) {
 	previousConfig, previousProxy := cfg, socketProxy
 	t.Cleanup(func() { cfg, socketProxy = previousConfig, previousProxy })

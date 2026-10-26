@@ -66,100 +66,127 @@ func (filter containerFilter) checkRequest(request *http.Request) error {
 	}
 	switch parts[2] {
 	case "containers":
-		if len(parts) < 4 {
-			return fmt.Errorf("unsupported container endpoint")
-		}
-		switch parts[3] {
-		case "json":
-			if len(parts) != 4 || request.Method != http.MethodGet {
-				return fmt.Errorf("unsupported container list request")
-			}
-			return nil
-		case "create":
-			if len(parts) != 4 || !filter.nameAllowed(request.URL.Query().Get("name")) {
-				return fmt.Errorf("container creation requires an allowed explicit name")
-			}
-			if len(filter.labels) > 0 {
-				body, err := readAndRestoreBody(request)
-				if err != nil {
-					return err
-				}
-				var creation struct{ Labels map[string]string }
-				if err := json.Unmarshal(body, &creation); err != nil {
-					return err
-				}
-				if !filter.labelsAllowed(creation.Labels) {
-					return fmt.Errorf("container creation requires matching explicit labels")
-				}
-			}
-			return nil
-		case "prune":
-			return fmt.Errorf("container pruning is not allowed with container restrictions")
-		}
-		if len(parts) >= 5 && parts[4] == "rename" && !filter.nameAllowed(request.URL.Query().Get("name")) {
-			return fmt.Errorf("new container name is not allowed")
-		}
-		id, err := filter.resolveAllowedContainer(request, apiPrefix, parts[3])
-		if err != nil {
-			return err
-		}
-		parts[3] = id
-		request.URL.Path = apiPrefix + "/" + strings.Join(parts[2:], "/")
-		request.URL.RawPath = ""
+		return filter.checkContainerRequest(request, apiPrefix, parts[3:])
 	case "exec":
-		if len(parts) < 4 {
-			return fmt.Errorf("missing exec ID")
-		}
-		var execution struct{ ContainerID string }
-		if err := inspectDockerResource(request, apiPrefix+"/exec/"+url.PathEscape(parts[3])+"/json", &execution); err != nil {
-			return err
-		}
-		_, err := filter.resolveAllowedContainer(request, apiPrefix, execution.ContainerID)
-		return err
+		return filter.checkExecRequest(request, apiPrefix, parts[3:])
 	case "commit":
-		query := request.URL.Query()
-		id, err := filter.resolveAllowedContainer(request, apiPrefix, query.Get("container"))
-		if err != nil {
-			return err
-		}
-		query.Set("container", id)
-		request.URL.RawQuery = query.Encode()
+		return filter.checkCommitRequest(request, apiPrefix)
 	case "networks":
-		if len(parts) != 5 || (parts[4] != "connect" && parts[4] != "disconnect") {
-			return nil
-		}
-		body, err := readAndRestoreBody(request)
-		if err != nil {
-			return err
-		}
-		var connection map[string]json.RawMessage
-		if err := json.Unmarshal(body, &connection); err != nil {
-			return err
-		}
-		var reference string
-		if err := json.Unmarshal(connection["Container"], &reference); err != nil {
-			return err
-		}
-		id, err := filter.resolveAllowedContainer(request, apiPrefix, reference)
-		if err != nil {
-			return err
-		}
-		for key := range connection {
-			if strings.EqualFold(key, "Container") {
-				delete(connection, key)
-			}
-		}
-		connection["Container"], err = json.Marshal(id)
-		if err != nil {
-			return err
-		}
-		body, err = json.Marshal(connection)
-		if err != nil {
-			return err
-		}
-		request.Body = io.NopCloser(bytes.NewReader(body))
-		request.ContentLength = int64(len(body))
+		return filter.checkNetworkRequest(request, apiPrefix, parts[3:])
 	}
+	return nil
+}
+
+func (filter containerFilter) checkContainerRequest(request *http.Request, apiPrefix string, resource []string) error {
+	if len(resource) == 0 {
+		return fmt.Errorf("unsupported container endpoint")
+	}
+	switch resource[0] {
+	case "json":
+		if len(resource) != 1 || request.Method != http.MethodGet {
+			return fmt.Errorf("unsupported container list request")
+		}
+		return nil
+	case "create":
+		if len(resource) != 1 {
+			return fmt.Errorf("container creation requires an allowed explicit name")
+		}
+		return filter.checkContainerCreation(request)
+	case "prune":
+		return fmt.Errorf("container pruning is not allowed with container restrictions")
+	}
+	if len(resource) >= 2 && resource[1] == "rename" && !filter.nameAllowed(request.URL.Query().Get("name")) {
+		return fmt.Errorf("new container name is not allowed")
+	}
+	id, err := filter.resolveAllowedContainer(request, apiPrefix, resource[0])
+	if err != nil {
+		return err
+	}
+	resource[0] = id
+	request.URL.Path = apiPrefix + "/containers/" + strings.Join(resource, "/")
+	request.URL.RawPath = ""
+	return nil
+}
+
+func (filter containerFilter) checkContainerCreation(request *http.Request) error {
+	if !filter.nameAllowed(request.URL.Query().Get("name")) {
+		return fmt.Errorf("container creation requires an allowed explicit name")
+	}
+	if len(filter.labels) == 0 {
+		return nil
+	}
+	body, err := readAndRestoreBody(request)
+	if err != nil {
+		return err
+	}
+	var creation struct{ Labels map[string]string }
+	if err := json.Unmarshal(body, &creation); err != nil {
+		return err
+	}
+	if !filter.labelsAllowed(creation.Labels) {
+		return fmt.Errorf("container creation requires matching explicit labels")
+	}
+	return nil
+}
+
+func (filter containerFilter) checkExecRequest(request *http.Request, apiPrefix string, resource []string) error {
+	if len(resource) == 0 {
+		return fmt.Errorf("missing exec ID")
+	}
+	var execution struct{ ContainerID string }
+	if err := inspectDockerResource(request, apiPrefix+"/exec/"+url.PathEscape(resource[0])+"/json", &execution); err != nil {
+		return err
+	}
+	_, err := filter.resolveAllowedContainer(request, apiPrefix, execution.ContainerID)
+	return err
+}
+
+func (filter containerFilter) checkCommitRequest(request *http.Request, apiPrefix string) error {
+	query := request.URL.Query()
+	id, err := filter.resolveAllowedContainer(request, apiPrefix, query.Get("container"))
+	if err != nil {
+		return err
+	}
+	query.Set("container", id)
+	request.URL.RawQuery = query.Encode()
+	return nil
+}
+
+func (filter containerFilter) checkNetworkRequest(request *http.Request, apiPrefix string, resource []string) error {
+	if len(resource) != 2 || (resource[1] != "connect" && resource[1] != "disconnect") {
+		return nil
+	}
+	body, err := readAndRestoreBody(request)
+	if err != nil {
+		return err
+	}
+	var connection map[string]json.RawMessage
+	if err := json.Unmarshal(body, &connection); err != nil {
+		return err
+	}
+	var reference string
+	if err := json.Unmarshal(connection["Container"], &reference); err != nil {
+		return err
+	}
+	id, err := filter.resolveAllowedContainer(request, apiPrefix, reference)
+	if err != nil {
+		return err
+	}
+	for key := range connection {
+		if strings.EqualFold(key, "Container") {
+			delete(connection, key)
+		}
+	}
+	connection["Container"], err = json.Marshal(id)
+	if err != nil {
+		return err
+	}
+	body, err = json.Marshal(connection)
+	if err != nil {
+		return err
+	}
+	request.Body = io.NopCloser(bytes.NewReader(body))
+	request.ContentLength = int64(len(body))
 	return nil
 }
 
