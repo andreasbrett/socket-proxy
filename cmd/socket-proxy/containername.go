@@ -12,6 +12,30 @@ import (
 	"strings"
 )
 
+type containerFilter struct {
+	prefixes []string
+	labels   []string
+}
+
+func (filter containerFilter) enabled() bool {
+	return len(filter.prefixes) > 0 || len(filter.labels) > 0
+}
+
+func (filter containerFilter) labelsAllowed(labels map[string]string) bool {
+	for _, requirement := range filter.labels {
+		key, expected, requireValue := strings.Cut(requirement, "=")
+		value, exists := labels[key]
+		if !exists || (requireValue && value != expected) {
+			return false
+		}
+	}
+	return true
+}
+
+func (filter containerFilter) nameAllowed(name string) bool {
+	return len(filter.prefixes) == 0 || containerNameAllowed(filter.prefixes, name)
+}
+
 func containerNameAllowed(prefixes []string, name string) bool {
 	name = strings.TrimPrefix(name, "/")
 	if strings.Contains(name, "/") {
@@ -25,8 +49,8 @@ func containerNameAllowed(prefixes []string, name string) bool {
 	return false
 }
 
-func checkContainerNameRestrictions(prefixes []string, request *http.Request) error {
-	if len(prefixes) == 0 {
+func (filter containerFilter) checkRequest(request *http.Request) error {
+	if !filter.enabled() {
 		return nil
 	}
 	if path.Clean(request.URL.Path) != request.URL.Path || strings.ContainsAny(request.URL.Path, "%\\") {
@@ -52,17 +76,30 @@ func checkContainerNameRestrictions(prefixes []string, request *http.Request) er
 			}
 			return nil
 		case "create":
-			if len(parts) != 4 || !containerNameAllowed(prefixes, request.URL.Query().Get("name")) {
+			if len(parts) != 4 || !filter.nameAllowed(request.URL.Query().Get("name")) {
 				return fmt.Errorf("container creation requires an allowed explicit name")
+			}
+			if len(filter.labels) > 0 {
+				body, err := readAndRestoreBody(request)
+				if err != nil {
+					return err
+				}
+				var creation struct{ Labels map[string]string }
+				if err := json.Unmarshal(body, &creation); err != nil {
+					return err
+				}
+				if !filter.labelsAllowed(creation.Labels) {
+					return fmt.Errorf("container creation requires matching explicit labels")
+				}
 			}
 			return nil
 		case "prune":
-			return fmt.Errorf("container pruning is not allowed with name restrictions")
+			return fmt.Errorf("container pruning is not allowed with container restrictions")
 		}
-		if len(parts) >= 5 && parts[4] == "rename" && !containerNameAllowed(prefixes, request.URL.Query().Get("name")) {
+		if len(parts) >= 5 && parts[4] == "rename" && !filter.nameAllowed(request.URL.Query().Get("name")) {
 			return fmt.Errorf("new container name is not allowed")
 		}
-		id, err := resolveAllowedContainer(prefixes, request, apiPrefix, parts[3])
+		id, err := filter.resolveAllowedContainer(request, apiPrefix, parts[3])
 		if err != nil {
 			return err
 		}
@@ -77,11 +114,11 @@ func checkContainerNameRestrictions(prefixes []string, request *http.Request) er
 		if err := inspectDockerResource(request, apiPrefix+"/exec/"+url.PathEscape(parts[3])+"/json", &execution); err != nil {
 			return err
 		}
-		_, err := resolveAllowedContainer(prefixes, request, apiPrefix, execution.ContainerID)
+		_, err := filter.resolveAllowedContainer(request, apiPrefix, execution.ContainerID)
 		return err
 	case "commit":
 		query := request.URL.Query()
-		id, err := resolveAllowedContainer(prefixes, request, apiPrefix, query.Get("container"))
+		id, err := filter.resolveAllowedContainer(request, apiPrefix, query.Get("container"))
 		if err != nil {
 			return err
 		}
@@ -103,7 +140,7 @@ func checkContainerNameRestrictions(prefixes []string, request *http.Request) er
 		if err := json.Unmarshal(connection["Container"], &reference); err != nil {
 			return err
 		}
-		id, err := resolveAllowedContainer(prefixes, request, apiPrefix, reference)
+		id, err := filter.resolveAllowedContainer(request, apiPrefix, reference)
 		if err != nil {
 			return err
 		}
@@ -126,19 +163,20 @@ func checkContainerNameRestrictions(prefixes []string, request *http.Request) er
 	return nil
 }
 
-func resolveAllowedContainer(prefixes []string, request *http.Request, apiPrefix, reference string) (string, error) {
+func (filter containerFilter) resolveAllowedContainer(request *http.Request, apiPrefix, reference string) (string, error) {
 	if reference == "" {
 		return "", fmt.Errorf("missing container reference")
 	}
 	var container struct {
-		ID   string `json:"Id"`
-		Name string
+		ID     string `json:"Id"`
+		Name   string
+		Config struct{ Labels map[string]string }
 	}
 	if err := inspectDockerResource(request, apiPrefix+"/containers/"+url.PathEscape(reference)+"/json", &container); err != nil {
 		return "", err
 	}
-	if !containerNameAllowed(prefixes, container.Name) || container.ID == "" || strings.ContainsAny(container.ID, "/%\\") {
-		return "", fmt.Errorf("container name is not allowed")
+	if !filter.nameAllowed(container.Name) || !filter.labelsAllowed(container.Config.Labels) || container.ID == "" || strings.ContainsAny(container.ID, "/%\\") {
+		return "", fmt.Errorf("container name or labels are not allowed")
 	}
 	return container.ID, nil
 }
@@ -171,7 +209,7 @@ func inspectDockerResource(request *http.Request, resourcePath string, result an
 	return nil
 }
 
-func filterContainerNameResponse(prefixes []string, response *http.Response) error {
+func (filter containerFilter) filterResponse(response *http.Response) error {
 	if response.StatusCode != http.StatusOK {
 		return nil
 	}
@@ -179,7 +217,11 @@ func filterContainerNameResponse(prefixes []string, response *http.Response) err
 	parts := strings.Split(apiPath, "/")
 	if len(parts) != 4 || parts[2] != "containers" || parts[3] != "json" {
 		if len(parts) == 3 && parts[2] == "events" {
-			response.Body = &containerEventReader{body: response.Body, decoder: json.NewDecoder(response.Body), prefixes: prefixes}
+			apiPrefix := ""
+			if parts[1] != "v0" {
+				apiPrefix = "/" + parts[1]
+			}
+			response.Body = &containerEventReader{body: response.Body, decoder: json.NewDecoder(response.Body), filter: filter, request: response.Request, apiPrefix: apiPrefix}
 			response.ContentLength = -1
 			response.Header.Del("Content-Length")
 		}
@@ -193,12 +235,22 @@ func filterContainerNameResponse(prefixes []string, response *http.Response) err
 	}
 	filtered := make([]json.RawMessage, 0, len(containers))
 	for _, raw := range containers {
-		var container struct{ Names []string }
+		var container struct {
+			Names  []string
+			Labels map[string]string
+		}
 		if err := json.Unmarshal(raw, &container); err != nil {
 			return err
 		}
+		if !filter.labelsAllowed(container.Labels) {
+			continue
+		}
+		if len(filter.prefixes) == 0 {
+			filtered = append(filtered, raw)
+			continue
+		}
 		for _, name := range container.Names {
-			if containerNameAllowed(prefixes, name) {
+			if filter.nameAllowed(name) {
 				filtered = append(filtered, raw)
 				break
 			}
@@ -215,10 +267,12 @@ func filterContainerNameResponse(prefixes []string, response *http.Response) err
 }
 
 type containerEventReader struct {
-	body     io.ReadCloser
-	decoder  *json.Decoder
-	prefixes []string
-	pending  []byte
+	body      io.ReadCloser
+	decoder   *json.Decoder
+	filter    containerFilter
+	request   *http.Request
+	apiPrefix string
+	pending   []byte
 }
 
 func (reader *containerEventReader) Read(buffer []byte) (int, error) {
@@ -232,14 +286,23 @@ func (reader *containerEventReader) Read(buffer []byte) (int, error) {
 		}
 		var event struct {
 			Type  string
-			Actor struct{ Attributes map[string]string }
+			Actor struct {
+				ID         string
+				Attributes map[string]string
+			}
 		}
 		if err := json.Unmarshal(raw, &event); err != nil {
 			return 0, err
 		}
-		if event.Type == "container" && containerNameAllowed(reader.prefixes, event.Actor.Attributes["name"]) {
-			reader.pending = append(raw, '\n')
+		if event.Type != "container" || !reader.filter.nameAllowed(event.Actor.Attributes["name"]) {
+			continue
 		}
+		if len(reader.filter.labels) > 0 {
+			if _, err := reader.filter.resolveAllowedContainer(reader.request, reader.apiPrefix, event.Actor.ID); err != nil {
+				continue
+			}
+		}
+		reader.pending = append(raw, '\n')
 	}
 	count := copy(buffer, reader.pending)
 	reader.pending = reader.pending[count:]

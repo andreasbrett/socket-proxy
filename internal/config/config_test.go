@@ -94,6 +94,49 @@ func TestInitConfig_DockerLabelPrefixFlagOverridesEnv(t *testing.T) {
 	}
 }
 
+func TestInitConfig_AllowedContainerLabels(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		value    string
+		prefixed *string
+		args     []string
+		want     []string
+		wantErr  bool
+	}{
+		{name: "default"},
+		{name: "environment", value: "myfoo, com.bar=fun", want: []string{"myfoo", "com.bar=fun"}},
+		{name: "prefixed environment wins", value: "ignored", prefixed: new("myfoo"), want: []string{"myfoo"}},
+		{name: "empty prefixed environment disables", value: "ignored", prefixed: new("")},
+		{name: "flag overrides environment", value: "ignored", args: []string{"-allowcontainerlabels=com.bar=fun"}, want: []string{"com.bar=fun"}},
+		{name: "empty flag disables", value: "ignored", args: []string{"-allowcontainerlabels="}},
+		{name: "empty value", value: "myfoo=", want: []string{"myfoo="}},
+		{name: "equals in value", value: "myfoo=a=b", want: []string{"myfoo=a=b"}},
+		{name: "empty entry", value: "myfoo,", wantErr: true},
+		{name: "empty key", value: "=fun", wantErr: true},
+		{name: "space in key", value: "my foo", wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("CONTAINER_LABELS", test.value)
+			t.Setenv("SP_ALLOWCONTAINERLABELS", "")
+			if err := os.Unsetenv("SP_ALLOWCONTAINERLABELS"); err != nil {
+				t.Fatal(err)
+			}
+			if test.prefixed != nil {
+				t.Setenv("SP_ALLOWCONTAINERLABELS", *test.prefixed)
+			}
+			restore := resetFlagsForTest(t, append([]string{"socket-proxy"}, test.args...))
+			defer restore()
+			cfg, err := InitConfig()
+			if (err != nil) != test.wantErr {
+				t.Fatalf("InitConfig() error = %v", err)
+			}
+			if err == nil && !reflect.DeepEqual(cfg.AllowLists.Default.AllowedContainerLabels, test.want) {
+				t.Errorf("labels = %v, want %v", cfg.AllowLists.Default.AllowedContainerLabels, test.want)
+			}
+		})
+	}
+}
+
 func TestInitConfig_InvalidDockerLabelPrefix(t *testing.T) {
 	for _, prefix := range []string{
 		"Traefik",

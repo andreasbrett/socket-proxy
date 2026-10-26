@@ -266,20 +266,21 @@ func (allowLists *AllowListRegistry) initByIP(ctx context.Context, dockerClient 
 func buildByIP(containers []container.Summary, networks []string) (map[string]AllowList, error) {
 	byIP := make(map[string]AllowList)
 	for _, cntr := range containers {
-		allowedRequests, allowedBindMounts, allowedContainerNames, err := extractLabelData(cntr)
+		allowedRequests, allowedBindMounts, allowedContainerNames, allowedContainerLabels, err := extractLabelData(cntr)
 		if err != nil {
 			return nil, err
 		}
 
-		if len(allowedRequests) > 0 || len(allowedBindMounts) > 0 || len(allowedContainerNames) > 0 {
+		if len(allowedRequests) > 0 || len(allowedBindMounts) > 0 || len(allowedContainerNames) > 0 || len(allowedContainerLabels) > 0 {
 			for networkID, cntrNetwork := range cntr.NetworkSettings.Networks {
 				if slices.Contains(networks, networkID) {
 					allowList := AllowList{
-						ID:                    cntr.ID,
-						ContainerName:         containerName(cntr),
-						AllowedRequests:       allowedRequests,
-						AllowedBindMounts:     allowedBindMounts,
-						AllowedContainerNames: allowedContainerNames,
+						ID:                     cntr.ID,
+						ContainerName:          containerName(cntr),
+						AllowedRequests:        allowedRequests,
+						AllowedBindMounts:      allowedBindMounts,
+						AllowedContainerNames:  allowedContainerNames,
+						AllowedContainerLabels: allowedContainerLabels,
 					}
 
 					if len(cntrNetwork.IPAddress) > 0 {
@@ -343,19 +344,20 @@ func (allowLists *AllowListRegistry) add(
 	}
 	cntr := containers[0]
 
-	allowedRequests, allowedBindMounts, allowedContainerNames, err := extractLabelData(cntr)
+	allowedRequests, allowedBindMounts, allowedContainerNames, allowedContainerLabels, err := extractLabelData(cntr)
 	if err != nil {
 		return nil, err
 	}
 
 	var ips []string
-	if len(allowedRequests) > 0 || len(allowedBindMounts) > 0 || len(allowedContainerNames) > 0 {
+	if len(allowedRequests) > 0 || len(allowedBindMounts) > 0 || len(allowedContainerNames) > 0 || len(allowedContainerLabels) > 0 {
 		allowList := AllowList{
-			ID:                    cntr.ID,
-			ContainerName:         containerName(cntr),
-			AllowedRequests:       allowedRequests,
-			AllowedBindMounts:     allowedBindMounts,
-			AllowedContainerNames: allowedContainerNames,
+			ID:                     cntr.ID,
+			ContainerName:          containerName(cntr),
+			AllowedRequests:        allowedRequests,
+			AllowedBindMounts:      allowedBindMounts,
+			AllowedContainerNames:  allowedContainerNames,
+			AllowedContainerLabels: allowedContainerLabels,
 		}
 
 		allowLists.mutex.Lock()
@@ -478,10 +480,11 @@ func getSocketProxyContainerSummary(socketPath, proxyContainerName string) (cont
 }
 
 // extract Docker container allowlist label data from the container summary
-func extractLabelData(cntr container.Summary) (map[string][]*regexp.Regexp, []string, []string, error) {
+func extractLabelData(cntr container.Summary) (map[string][]*regexp.Regexp, []string, []string, []string, error) {
 	allowedRequests := make(map[string][]*regexp.Regexp)
 	var allowedBindMounts []string
 	var allowedContainerNames []string
+	var allowedContainerLabels []string
 	for labelName, labelValue := range cntr.Labels {
 		if strings.HasPrefix(labelName, allowedDockerLabelPrefix) && labelValue != "" {
 			allowSpec := strings.ToUpper(strings.TrimPrefix(labelName, allowedDockerLabelPrefix))
@@ -489,23 +492,29 @@ func extractLabelData(cntr container.Summary) (map[string][]*regexp.Regexp, []st
 			if slices.Contains(supportedHTTPMethods, method) {
 				r, err := compileRegexp(labelValue, method, "docker container label")
 				if err != nil {
-					return nil, nil, nil, err
+					return nil, nil, nil, nil, err
 				}
 				allowedRequests[method] = append(allowedRequests[method], r)
 			} else if allowSpec == "BINDMOUNTFROM" {
 				var err error
 				allowedBindMounts, err = parseAllowedBindMounts(labelValue)
 				if err != nil {
-					return nil, nil, nil, err
+					return nil, nil, nil, nil, err
 				}
 			} else if allowSpec == "CONTAINERNAME" {
 				var err error
 				allowedContainerNames, err = parseAllowedContainerNames(labelValue)
 				if err != nil {
-					return nil, nil, nil, err
+					return nil, nil, nil, nil, err
+				}
+			} else if allowSpec == "CONTAINERLABELS" {
+				var err error
+				allowedContainerLabels, err = parseAllowedContainerLabels(labelValue)
+				if err != nil {
+					return nil, nil, nil, nil, err
 				}
 			}
 		}
 	}
-	return allowedRequests, allowedBindMounts, allowedContainerNames, nil
+	return allowedRequests, allowedBindMounts, allowedContainerNames, allowedContainerLabels, nil
 }

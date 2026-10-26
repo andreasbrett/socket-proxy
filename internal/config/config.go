@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 const (
@@ -52,11 +53,12 @@ type Config struct {
 }
 
 type AllowList struct {
-	ID                    string                      // Container ID (empty for the default allowlist)
-	ContainerName         string                      // Container name (empty for the default allowlist)
-	AllowedRequests       map[string][]*regexp.Regexp // map of request methods to request path regex patterns (no requests allowed if empty)
-	AllowedBindMounts     []string                    // list of from portion of allowed bind mounts (all bind mounts allowed if empty)
-	AllowedContainerNames []string
+	ID                     string                      // Container ID (empty for the default allowlist)
+	ContainerName          string                      // Container name (empty for the default allowlist)
+	AllowedRequests        map[string][]*regexp.Regexp // map of request methods to request path regex patterns (no requests allowed if empty)
+	AllowedBindMounts      []string                    // list of from portion of allowed bind mounts (all bind mounts allowed if empty)
+	AllowedContainerNames  []string
+	AllowedContainerLabels []string
 }
 
 // used for list of allowed requests
@@ -92,6 +94,7 @@ func InitConfig() (*Config, error) {
 		endpointFileMode                        uint
 		allowBindMountFromString                string
 		allowContainerNameString                string
+		allowContainerLabelsString              string
 		dockerLabelPrefix                       string
 		defaultAllowFromValue                   = defaultAllowFrom
 		defaultAllowHealthcheckValue            = defaultAllowHealthcheck
@@ -169,6 +172,10 @@ func InitConfig() (*Config, error) {
 	if val, ok := os.LookupEnv("SP_PROXYCONTAINERNAME"); ok && val != "" {
 		defaultProxyContainerNameValue = val
 	}
+	defaultContainerLabels := os.Getenv("CONTAINER_LABELS")
+	if value, ok := os.LookupEnv("SP_ALLOWCONTAINERLABELS"); ok {
+		defaultContainerLabels = value
+	}
 
 	methodAllowLists := newMethodRegexes()
 
@@ -197,6 +204,7 @@ func InitConfig() (*Config, error) {
 	flag.UintVar(&endpointFileMode, "proxysocketendpointfilemode", defaultProxySocketEndpointFileModeValue, "set the file mode of the unix socket endpoint")
 	flag.StringVar(&allowBindMountFromString, "allowbindmountfrom", defaultAllowBindMountFromValue, "allowed directories for bind mounts (comma-separated)")
 	flag.StringVar(&allowContainerNameString, "allowcontainername", os.Getenv("SP_ALLOWCONTAINERNAME"), "allowed container name prefixes (comma-separated; empty allows all names)")
+	flag.StringVar(&allowContainerLabelsString, "allowcontainerlabels", defaultContainerLabels, "required container labels (comma-separated key or key=value; all must match)")
 	flag.StringVar(&dockerLabelPrefix, "dockerlabelprefix", defaultDockerLabelPrefixValue, "prefix before .allow. in Docker container allowlist labels")
 	flag.StringVar(&cfg.ProxyContainerName, "proxycontainername", defaultProxyContainerNameValue, "socket-proxy Docker container name")
 	for i := range methodAllowLists {
@@ -212,6 +220,10 @@ func InitConfig() (*Config, error) {
 	cfg.AllowLists = &AllowListRegistry{}
 	var err error
 	cfg.AllowLists.Default.AllowedContainerNames, err = parseAllowedContainerNames(allowContainerNameString)
+	if err != nil {
+		return nil, err
+	}
+	cfg.AllowLists.Default.AllowedContainerLabels, err = parseAllowedContainerLabels(allowContainerLabelsString)
 	if err != nil {
 		return nil, err
 	}
@@ -306,6 +318,9 @@ func InitConfig() (*Config, error) {
 // Print prints the allowlist, including the IP address of the associated container if it is not empty,
 // and in JSON format if logJSON is true
 func (allowList AllowList) Print(ip string, logJSON bool) {
+	if len(allowList.AllowedContainerLabels) > 0 {
+		slog.Info("Docker container label restrictions enabled", "allowcontainerlabels", allowList.AllowedContainerLabels, "container", allowList.ContainerName, "ip", ip)
+	}
 	if len(allowList.AllowedContainerNames) > 0 {
 		slog.Info("Docker container name restrictions enabled", "allowcontainername", allowList.AllowedContainerNames, "container", allowList.ContainerName, "ip", ip)
 	}
@@ -413,4 +428,22 @@ func parseAllowedContainerNames(value string) ([]string, error) {
 		prefixes[index] = prefix
 	}
 	return prefixes, nil
+}
+
+func parseAllowedContainerLabels(value string) ([]string, error) {
+	if value == "" {
+		return nil, nil
+	}
+	labels := strings.Split(value, ",")
+	for index, requirement := range labels {
+		requirement = strings.TrimSpace(requirement)
+		key, _, _ := strings.Cut(requirement, "=")
+		if key == "" || strings.IndexFunc(key, func(character rune) bool {
+			return unicode.IsSpace(character) || unicode.IsControl(character)
+		}) >= 0 {
+			return nil, fmt.Errorf("invalid container label requirement %q", requirement)
+		}
+		labels[index] = requirement
+	}
+	return labels, nil
 }

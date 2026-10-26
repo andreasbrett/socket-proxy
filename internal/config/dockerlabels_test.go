@@ -24,13 +24,25 @@ func Test_extractLabelData(t *testing.T) {
 	tests := []struct {
 		name string // description of this test case
 		// Named input parameters for target function.
-		cntr      container.Summary
-		prefix    string
-		want      map[string][]*regexp.Regexp
-		want2     []string
-		wantNames []string
-		wantErr   bool
+		cntr       container.Summary
+		prefix     string
+		want       map[string][]*regexp.Regexp
+		want2      []string
+		wantNames  []string
+		wantLabels []string
+		wantErr    bool
 	}{
+		{
+			name:       "container label requirements",
+			cntr:       container.Summary{Labels: map[string]string{"socket-proxy.allow.containerlabels": "myfoo,com.bar=fun"}},
+			want:       map[string][]*regexp.Regexp{},
+			wantLabels: []string{"myfoo", "com.bar=fun"},
+		},
+		{
+			name:    "invalid container label requirements",
+			cntr:    container.Summary{Labels: map[string]string{"socket-proxy.allow.containerlabels": "myfoo,,com.bar=fun"}},
+			wantErr: true,
+		},
 		{
 			name:      "container name prefixes",
 			cntr:      container.Summary{Labels: map[string]string{"socket-proxy.allow.containername": "db, redis"}},
@@ -103,7 +115,7 @@ func Test_extractLabelData(t *testing.T) {
 			if tt.prefix != "" {
 				allowedDockerLabelPrefix = tt.prefix + ".allow."
 			}
-			got, got2, gotNames, gotErr := extractLabelData(tt.cntr)
+			got, got2, gotNames, gotLabels, gotErr := extractLabelData(tt.cntr)
 			if gotErr != nil {
 				if !tt.wantErr {
 					t.Errorf("extractLabelData() failed: %v", gotErr)
@@ -121,6 +133,9 @@ func Test_extractLabelData(t *testing.T) {
 			}
 			if !reflect.DeepEqual(gotNames, tt.wantNames) {
 				t.Errorf("container name prefixes = %v, want %v", gotNames, tt.wantNames)
+			}
+			if !reflect.DeepEqual(gotLabels, tt.wantLabels) {
+				t.Errorf("container label requirements = %v, want %v", gotLabels, tt.wantLabels)
 			}
 		})
 	}
@@ -166,9 +181,11 @@ func TestBuildByIPContainerNamePrefixes(t *testing.T) {
 		ID:    "client-id",
 		Names: []string{"/client"},
 		Labels: map[string]string{
-			"custom-proxy.allow.get":           ".*",
-			"custom-proxy.allow.containername": "db,redis",
-			"socket-proxy.allow.containername": "ignored",
+			"custom-proxy.allow.get":             ".*",
+			"custom-proxy.allow.containername":   "db,redis",
+			"custom-proxy.allow.containerlabels": "myfoo,com.bar=fun",
+			"socket-proxy.allow.containername":   "ignored",
+			"socket-proxy.allow.containerlabels": "ignored",
 		},
 		NetworkSettings: &container.NetworkSettingsSummary{Networks: map[string]*network.EndpointSettings{
 			"proxy-network": {IPAddress: "172.20.0.2", GlobalIPv6Address: "fd00::2"},
@@ -180,6 +197,9 @@ func TestBuildByIPContainerNamePrefixes(t *testing.T) {
 	for _, ip := range []string{"172.20.0.2", "fd00::2"} {
 		if !reflect.DeepEqual(byIP[ip].AllowedContainerNames, []string{"db", "redis"}) {
 			t.Errorf("allowlist for %s = %+v", ip, byIP[ip])
+		}
+		if !reflect.DeepEqual(byIP[ip].AllowedContainerLabels, []string{"myfoo", "com.bar=fun"}) {
+			t.Errorf("label requirements for %s = %v", ip, byIP[ip].AllowedContainerLabels)
 		}
 	}
 }
@@ -208,6 +228,28 @@ func TestEventContainerName(t *testing.T) {
 				t.Errorf("eventContainerName() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestBuildByIPContainerLabelsOnly(t *testing.T) {
+	byIP, err := buildByIP([]container.Summary{{
+		ID: "client-id",
+		Labels: map[string]string{
+			allowedDockerLabelPrefix + "containerlabels": "myfoo,com.bar=fun",
+		},
+		NetworkSettings: &container.NetworkSettingsSummary{Networks: map[string]*network.EndpointSettings{
+			"proxy-network": {IPAddress: "172.20.0.2"},
+		}},
+	}}, []string{"proxy-network"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowList, found := byIP["172.20.0.2"]
+	if !found || !reflect.DeepEqual(allowList.AllowedContainerLabels, []string{"myfoo", "com.bar=fun"}) {
+		t.Fatalf("label-only allowlist missing or incorrect: %+v", allowList)
+	}
+	if len(allowList.AllowedRequests) != 0 {
+		t.Fatalf("label-only allowlist must not grant HTTP methods: %v", allowList.AllowedRequests)
 	}
 }
 

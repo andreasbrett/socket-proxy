@@ -231,9 +231,33 @@ When enabled:
 > [!WARNING]
 > This filter is not a Docker authorization sandbox. Other endpoints (for example, network inspection, `/system/df`, builds, and Swarm services) are not filtered and may expose information about or affect other containers. Names are mutable, and inspection cannot be atomic with the subsequent operation. Restrict HTTP methods and paths to the endpoints clients actually need; do not grant broad Docker API access to untrusted clients.
 
+#### Filtering by container labels
+
+Use `CONTAINER_LABELS="myfoo,com.bar=fun"`, `SP_ALLOWCONTAINERLABELS="myfoo,com.bar=fun"`, or `-allowcontainerlabels=myfoo,com.bar=fun` to require labels on the **target containers**:
+
++ `myfoo` requires that the label exists, regardless of its value (including an empty value).
++ `com.bar=fun` requires that the label has exactly the value `fun`.
++ All comma-separated requirements must match (AND). Keys and values are case-sensitive. `myfoo=` explicitly requires an existing label with an empty value.
+
+Surrounding whitespace is trimmed; empty entries, empty keys, and whitespace in keys are rejected. Values may contain `=` but not commas. An empty configuration disables the label filter. Command-line flags take priority over `SP_ALLOWCONTAINERLABELS`, which takes priority over `CONTAINER_LABELS`, including when explicitly empty.
+
+For a particular **requesting container**, configure:
+
+```yaml
+labels:
+  - 'socket-proxy.allow.get=.*'
+  - 'socket-proxy.allow.containerlabels=myfoo,com.bar=fun'
+```
+
+This requires per-container allowlists to be enabled using `-proxycontainername`; a custom `-dockerlabelprefix` applies. As with name filters, per-container allowlists replace rather than inherit the global default. If both name and label filters are configured in the selected allowlist, both must match.
+
+Label filtering covers the same container endpoints as name filtering: lists, direct requests (including IDs), exec sessions, commits, network connect/disconnect, and container event streams. Bulk container pruning is rejected. Container creation requires matching labels explicitly in the request body; labels inherited only from an image do not satisfy this check. An explicit container name is only required when a name filter is also configured. Event labels are verified through Docker inspection rather than trusting event attributes; events for containers that can no longer be inspected, such as removed containers, are omitted.
+
+The Docker authorization limitations documented for name filtering also apply to label filtering. HTTP method/path allowlists remain necessary.
+
 #### Setting up per-container allowlists
 
-Allowlists for requests, bind mount restrictions, and container name prefixes can be specified for particular containers. To do this:
+Allowlists for requests, bind mount restrictions, container name prefixes, and container labels can be specified for particular containers. To do this:
 
 1. Set the `-proxycontainername` parameter or the `SP_PROXYCONTAINERNAME` environment variable to the name of the socket-proxy container.
 2. Make sure that each container that will use the socket-proxy is in a Docker network that the socket-proxy container is also in.
@@ -346,6 +370,7 @@ socket-proxy can be configured via command-line parameters or environment variab
 | `-allowfrom`                   | `SP_ALLOWFROM`                   | `127.0.0.1/32`         | Specifies the IP addresses or hostnames (comma-separated) of the clients or the hostname of one specific client allowed to connect to the proxy. The default value is `127.0.0.1/32`, which means only localhost is allowed. This default configuration may not be useful in most cases, but it is because of a secure-by-default design. To allow all IPv4 addresses, set `-allowfrom=0.0.0.0/0`. Alternatively, hostnames can be set, for example `-allowfrom=traefik`, or `-allowfrom=traefik,dozzle`. Please remember that socket-proxy should never be exposed to a public network, regardless of this extra security layer. |
 | `-allowbindmountfrom`          | `SP_ALLOWBINDMOUNTFROM`          | (not set)              | Restricts direct host bind sources found in supported Docker API requests to the specified directories and their subdirectories. It covers legacy and modern binds plus local volume-driver `bind`/`rbind` options, and rejects `VolumesFrom`. It is a request filter with the limitations documented above, not a sandbox for untrusted Docker API clients. Each comma-separated directory must start with `/`.                                                                                                                                                                                                                         |
 | `-allowcontainername`          | `SP_ALLOWCONTAINERNAME`          | (not set)              | Comma-separated, case-sensitive container name prefixes. Filters container lists and events and checks direct container access, including access by ID. Per-container label: `socket-proxy.allow.containername`. See the restrictions and limitations above. |
+| `-allowcontainerlabels`        | `SP_ALLOWCONTAINERLABELS` or `CONTAINER_LABELS` | (not set) | Required container labels as comma-separated `key` or `key=value` entries; all must match. Filters container lists and events and checks direct access, including access by ID. Per-container label: `socket-proxy.allow.containerlabels`. See the restrictions and limitations above. |
 | `-allowhealthcheck`            | `SP_ALLOWHEALTHCHECK`            | (not set/false)        | If set, it allows the included health check binary to check the socket connection via TCP port 55555 (socket-proxy then listens on `127.0.0.1:55555/health`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `-listenip`                    | `SP_LISTENIP`                    | `127.0.0.1`            | Specifies the IP address the server will bind on. Default is only the internal network.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `-logjson`                     | `SP_LOGJSON`                     | (not set/false)        | If set, it enables logging in JSON format. If unset, socket-proxy logs in plain text format.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |

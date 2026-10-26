@@ -35,18 +35,17 @@ func handleHTTPRequest(w http.ResponseWriter, r *http.Request) {
 		communicateBlockedRequest(w, r, "bind mount restriction: "+err.Error(), http.StatusForbidden)
 		return
 	}
-	if err := checkContainerNameRestrictions(allowList.AllowedContainerNames, r); err != nil {
-		communicateBlockedRequest(w, r, "container name restriction: "+err.Error(), http.StatusForbidden)
+	filter := containerFilter{prefixes: allowList.AllowedContainerNames, labels: allowList.AllowedContainerLabels}
+	if err := filter.checkRequest(r); err != nil {
+		communicateBlockedRequest(w, r, "container restriction: "+err.Error(), http.StatusForbidden)
 		return
 	}
 
 	// finally, log and proxy the request
 	slog.Debug("allowed request", "method", r.Method, "URL", r.URL, "client", r.RemoteAddr) // #nosec G706 - structured logging (slog) safely encodes values
-	if len(allowList.AllowedContainerNames) > 0 {
+	if filter.enabled() {
 		proxy := *socketProxy
-		proxy.ModifyResponse = func(response *http.Response) error {
-			return filterContainerNameResponse(allowList.AllowedContainerNames, response)
-		}
+		proxy.ModifyResponse = filter.filterResponse
 		proxy.ServeHTTP(w, r)
 		return
 	}
